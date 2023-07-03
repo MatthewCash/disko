@@ -25,7 +25,7 @@
           };
           lvm_type = lib.mkOption {
             # TODO: add raid10
-            type = lib.types.nullOr (lib.types.enum [ "mirror" "raid0" "raid1" "raid4" "raid5" "raid6" ]); # TODO add all lib.types
+            type = lib.types.nullOr (lib.types.enum [ "mirror" "raid0" "raid1" "raid4" "raid5" "raid6" "thin-pool" "thinlv" ]); # TODO add all lib.types
             default = null; # maybe there is always a default type?
             description = "LVM type";
           };
@@ -33,6 +33,16 @@
             type = lib.types.listOf lib.types.str;
             default = [ ];
             description = "Extra arguments";
+          };
+          pool = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Pool LV this LV is part of";
+          };
+          priority = lib.mkOption {
+            type = lib.types.int;
+            default = (if lv.config.lvm_type == "thin-pool" then 501 else 1000) + (if lib.hasInfix "100%" lv.config.size then 251 else 0);
+            description = "Priority when creating LVs. Lower priority gets created first.";
           };
           content = diskoLib.partitionType { parent = config; device = "/dev/${config.name}/${lv.config.name}"; };
         };
@@ -56,7 +66,7 @@
       inherit config options;
       default =
         let
-          sortedLvs = lib.sort (a: _: !lib.hasInfix "100%" a.size) (lib.attrValues config.lvs);
+          sortedLvs = lib.sort (a: b: a.priority < b.priority) (lib.attrValues config.lvs);
         in
         ''
           readarray -t lvm_devices < <(cat "$disko_devices_dir"/lvm_${config.name})
@@ -65,9 +75,12 @@
           ${lib.concatMapStrings (lv: ''
             lvcreate \
               --yes \
-              ${if lib.hasInfix "%" lv.size then "-l" else "-L"} ${lv.size} \
+              ${if (lv.lvm_type != "thinlv") then
+                (if lib.hasInfix "%" lv.size then "-l" else "-L")
+                else "-V"} ${lv.size} \
               -n ${lv.name} \
-              ${lib.optionalString (lv.lvm_type != null) "--type=${lv.lvm_type}"} \
+              ${lib.optionalString (lv.lvm_type == "thinlv") "--thinpool=${lv.pool}"} \
+              ${lib.optionalString (lv.lvm_type != null && lv.lvm_type != "thinlv") "--type=${lv.lvm_type}"} \
               ${toString lv.extraArgs} \
               ${config.name}
             ${lib.optionalString (lv.content != null) lv.content._create}
